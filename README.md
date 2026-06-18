@@ -1,13 +1,21 @@
 # hyperlight-gh-bot
 
-A GitHub App webhook server that automatically posts benchmark results as PR comments on the [hyperlight](https://github.com/hyperlight-dev/hyperlight) repository.
+A GitHub App webhook server that posts workflow artifact content as PR comments.
 
 ## How it works
 
-1. The hyperlight CI runs benchmarks and uploads `benchmark-report_*` artifacts.
-2. GitHub sends a `workflow_job` webhook event when each benchmark job completes.
-3. The bot downloads the benchmark report artifacts from the workflow run.
-4. It posts (or updates) a combined comment on the associated PR with collapsible sections per platform/hypervisor/CPU.
+1. A CI workflow runs and uploads an artifact containing the comment body (default name: `pr-comment`).
+2. GitHub sends a `workflow_job` webhook event when the job completes.
+3. The bot downloads the artifact and posts (or updates) a comment on the associated PR.
+
+Per-repository behavior is configured via `.github/hyperlight-bot.yml`:
+
+```yaml
+# Name of the artifact containing the comment body (default: "pr-comment")
+artifact_name: "pr-comment"
+# Regex matched against the job name to filter which jobs trigger the bot (default: ".*")
+job_filter: ".*"
+```
 
 ## Prerequisites
 
@@ -28,7 +36,6 @@ The bot is configured via environment variables:
 | `GITHUB_APP_ID` | The numeric App ID |
 | `GITHUB_APP_KEY` | The App's private key (PEM format, including `-----BEGIN...` markers) |
 | `GITHUB_WEBHOOK_SECRET` | The webhook secret configured in the App settings |
-| `GITHUB_INSTALLATION_ID` | The installation ID for the target repository |
 
 ## Running locally
 
@@ -36,7 +43,6 @@ The bot is configured via environment variables:
 export GITHUB_APP_ID=123456
 export GITHUB_APP_KEY="$(cat private-key.pem)"
 export GITHUB_WEBHOOK_SECRET="your-secret"
-export GITHUB_INSTALLATION_ID=789012
 
 cargo run
 ```
@@ -51,7 +57,6 @@ docker run -p 8080:8080 \
   -e GITHUB_APP_ID=... \
   -e GITHUB_APP_KEY="$(cat private-key.pem)" \
   -e GITHUB_WEBHOOK_SECRET=... \
-  -e GITHUB_INSTALLATION_ID=... \
   hyperlight-gh-bot
 ```
 

@@ -9,8 +9,6 @@ pub struct Config {
     pub private_key: String,
     /// Webhook secret for signature verification.
     pub webhook_secret: String,
-    /// GitHub App installation ID.
-    pub installation_id: u64,
 }
 
 impl Config {
@@ -25,10 +23,6 @@ impl Config {
                 .context("GITHUB_APP_KEY not set")?,
             webhook_secret: std::env::var("GITHUB_WEBHOOK_SECRET")
                 .context("GITHUB_WEBHOOK_SECRET not set")?,
-            installation_id: std::env::var("GITHUB_INSTALLATION_ID")
-                .context("GITHUB_INSTALLATION_ID not set")?
-                .parse()
-                .context("GITHUB_INSTALLATION_ID must be a number")?,
         })
     }
 }

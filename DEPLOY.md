@@ -10,7 +10,7 @@ Go to **GitHub → Settings → Developer settings → GitHub Apps → New GitHu
 |-------|-------|
 | App name | `hyperlight-benchmark-bot` (or similar) |
 | Homepage URL | Repository URL or deployment URL |
-| Webhook URL | `https://<your-container-app>.azurecontainerapps.io/webhook` |
+| Webhook URL | `https://example.com` (placeholder — you'll update this after deployment) |
 | Webhook secret | A random string (save it — you'll need it for deployment) |
 
 ### 2. Permissions
@@ -37,10 +37,9 @@ After creating the App, click **Generate a private key**. Save the `.pem` file.
 
 Go to **Install App** in the sidebar and install it on the `hyperlight-dev/hyperlight` repository (or the target org/repo).
 
-### 6. Note the IDs
+### 6. Note the App ID
 
 - **App ID**: shown on the App's General page
-- **Installation ID**: visible in the URL after installing — `https://github.com/settings/installations/<INSTALLATION_ID>`
 
 ## Azure Container Apps deployment
 
@@ -49,6 +48,8 @@ Go to **Install App** in the sidebar and install it on the `hyperlight-dev/hyper
 ```bash
 az login
 az extension add --name containerapp --upgrade
+az provider register -n Microsoft.App --wait
+az provider register -n Microsoft.OperationalInsights --wait
 ```
 
 ### Set variables
@@ -80,7 +81,8 @@ You can also trigger it manually from the Actions tab.
 az keyvault create \
   --resource-group $RESOURCE_GROUP \
   --name $KEY_VAULT \
-  --location $LOCATION
+  --location $LOCATION \
+  --enable-rbac-authorization false
 
 az keyvault secret set --vault-name $KEY_VAULT \
   --name github-app-key \
@@ -122,11 +124,10 @@ az containerapp create \
     GITHUB_APP_ID=<your-app-id> \
     GITHUB_APP_KEY=secretref:github-app-key \
     GITHUB_WEBHOOK_SECRET=secretref:github-webhook-secret \
-    GITHUB_INSTALLATION_ID=<your-installation-id> \
     RUST_LOG=info
 ```
 
-### Get the ingress URL
+### Get the ingress URL and update the GitHub App
 
 ```bash
 az containerapp show \
@@ -135,7 +136,7 @@ az containerapp show \
   --query "properties.configuration.ingress.fqdn" -o tsv
 ```
 
-Update the GitHub App's webhook URL to `https://<fqdn>/webhook`.
+Go back to your GitHub App settings and update the **Webhook URL** to `https://<fqdn>/webhook`.
 
 ### Update the deployment
 

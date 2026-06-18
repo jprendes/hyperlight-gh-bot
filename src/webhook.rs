@@ -15,6 +15,7 @@ struct WorkflowJobEvent {
     action: String,
     workflow_job: WorkflowJob,
     repository: Repository,
+    installation: Installation,
 }
 
 #[derive(serde::Deserialize)]
@@ -34,6 +35,11 @@ struct Repository {
 #[derive(serde::Deserialize)]
 struct RepoOwner {
     login: String,
+}
+
+#[derive(serde::Deserialize)]
+struct Installation {
+    id: u64,
 }
 
 /// Main webhook handler — verifies the signature and dispatches events.
@@ -67,8 +73,7 @@ pub async fn handle(
     }
 }
 
-/// Handles a `workflow_job` event — checks if benchmark jobs have completed
-/// and triggers comment posting.
+/// Handles a `workflow_job` event — triggers comment posting when a job completes.
 async fn handle_workflow_job(config: &Config, body: &[u8]) -> StatusCode {
     let event: WorkflowJobEvent = match serde_json::from_slice(body) {
         Ok(e) => e,
@@ -82,13 +87,8 @@ async fn handle_workflow_job(config: &Config, body: &[u8]) -> StatusCode {
         return StatusCode::OK;
     }
 
-    // Only care about benchmark jobs (adjust the pattern to match your job names)
-    if !event.workflow_job.name.contains("benchmark") {
-        return StatusCode::OK;
-    }
-
     tracing::info!(
-        "Benchmark job '{}' completed (conclusion: {:?}) for SHA {}",
+        "Workflow job '{}' completed (conclusion: {:?}) for SHA {}",
         event.workflow_job.name,
         event.workflow_job.conclusion,
         event.workflow_job.head_sha,
@@ -98,12 +98,14 @@ async fn handle_workflow_job(config: &Config, body: &[u8]) -> StatusCode {
     let repo = event.repository.name.clone();
     let run_id = event.workflow_job.run_id;
     let head_sha = event.workflow_job.head_sha.clone();
+    let installation_id = event.installation.id;
+    let job_name = event.workflow_job.name.clone();
 
     // Spawn in background so we respond to GitHub immediately
     let config = config.clone();
     tokio::spawn(async move {
         if let Err(e) =
-            handler::try_post_benchmark_comment(&config, &owner, &repo, run_id, &head_sha).await
+            handler::try_post_benchmark_comment(&config, &owner, &repo, run_id, &head_sha, installation_id, &job_name).await
         {
             tracing::error!("Failed to post benchmark comment: {e:#}");
         }

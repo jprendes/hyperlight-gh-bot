@@ -2,25 +2,40 @@ use anyhow::{Context, Result};
 
 use crate::auth;
 use crate::config::Config;
+use crate::repo_config;
 
-/// Artifact name prefix used by the benchmark workflow.
-const ARTIFACT_PREFIX: &str = "benchmark-report_";
-
-/// Attempts to download all benchmark report artifacts from a workflow run
-/// and post a combined comment to the associated PR.
+/// Downloads the comment artifact from a workflow run and posts it to the associated PR.
+/// The artifact is expected to be a zip containing a single text file with the comment body.
 pub async fn try_post_benchmark_comment(
     config: &Config,
     owner: &str,
     repo: &str,
     run_id: u64,
     head_sha: &str,
+    installation_id: u64,
+    job_name: &str,
 ) -> Result<()> {
     let octocrab = auth::octocrab_for_installation(
         config.app_id,
         &config.private_key,
-        config.installation_id,
+        installation_id,
     )
     .await?;
+
+    // Load per-repo config (or defaults if file not found)
+    let repo_config = repo_config::load(&octocrab, owner, repo).await?;
+
+    // Check if this job matches the configured filter
+    let job_regex = repo_config.job_filter_regex()?;
+    if !job_regex.is_match(job_name) {
+        tracing::debug!(
+            "Job '{job_name}' does not match filter '{}', skipping",
+            repo_config.job_filter
+        );
+        return Ok(());
+    }
+
+    tracing::info!("Processing job '{job_name}' for SHA {head_sha}");
 
     // Find the PR associated with this head SHA
     let pr_number = find_pr_for_sha(&octocrab, owner, repo, head_sha)
@@ -29,47 +44,23 @@ pub async fn try_post_benchmark_comment(
 
     tracing::info!("Found PR #{pr_number} for SHA {head_sha}");
 
-    // List artifacts for this workflow run
-    let artifacts = list_benchmark_artifacts(&octocrab, owner, repo, run_id).await?;
+    // Find the comment artifact
+    let artifact_id = find_artifact(&octocrab, owner, repo, run_id, &repo_config.artifact_name)
+        .await?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Artifact '{}' not found for run {run_id}",
+                repo_config.artifact_name
+            )
+        })?;
 
-    if artifacts.is_empty() {
-        tracing::info!("No benchmark artifacts found for run {run_id}");
-        return Ok(());
-    }
-
-    // Download and combine all benchmark report artifacts
-    let mut sections = Vec::new();
-    for artifact in &artifacts {
-        let label = artifact
-            .name
-            .strip_prefix(ARTIFACT_PREFIX)
-            .unwrap_or(&artifact.name);
-
-        match download_artifact_text(&octocrab, owner, repo, artifact.id).await {
-            Ok(content) => {
-                sections.push(format!(
-                    "<details>\n<summary>{label}</summary>\n\n{content}\n</details>"
-                ));
-            }
-            Err(e) => {
-                tracing::warn!("Failed to download artifact '{}': {e:#}", artifact.name);
-            }
-        }
-    }
-
-    if sections.is_empty() {
-        return Ok(());
-    }
-
-    let body = format!(
-        "## Benchmark Results\n\n{}\n\n<sub>Posted by hyperlight-gh-bot for commit {head_sha}</sub>",
-        sections.join("\n\n"),
-    );
+    // Download the artifact content — this is the comment body
+    let body = download_artifact_text(&octocrab, owner, repo, artifact_id).await?;
 
     // Upsert the comment (update existing bot comment or create new one)
     upsert_pr_comment(&octocrab, owner, repo, pr_number, &body).await?;
 
-    tracing::info!("Posted benchmark comment on PR #{pr_number}");
+    tracing::info!("Posted comment on PR #{pr_number}");
     Ok(())
 }
 
@@ -96,19 +87,14 @@ async fn find_pr_for_sha(
     Ok(None)
 }
 
-/// Minimal artifact info.
-struct ArtifactInfo {
-    id: u64,
-    name: String,
-}
-
-/// Lists benchmark report artifacts for a workflow run.
-async fn list_benchmark_artifacts(
+/// Finds an artifact by exact name in a workflow run.
+async fn find_artifact(
     octocrab: &octocrab::Octocrab,
     owner: &str,
     repo: &str,
     run_id: u64,
-) -> Result<Vec<ArtifactInfo>> {
+    artifact_name: &str,
+) -> Result<Option<u64>> {
     let response: serde_json::Value = octocrab
         .get(
             format!("/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts"),
@@ -122,20 +108,14 @@ async fn list_benchmark_artifacts(
         .cloned()
         .unwrap_or_default();
 
-    Ok(artifacts
-        .into_iter()
-        .filter_map(|a| {
-            let name = a["name"].as_str()?.to_string();
-            if name.starts_with(ARTIFACT_PREFIX) {
-                Some(ArtifactInfo {
-                    id: a["id"].as_u64()?,
-                    name,
-                })
-            } else {
-                None
-            }
-        })
-        .collect())
+    Ok(artifacts.iter().find_map(|a| {
+        let name = a["name"].as_str()?;
+        if name == artifact_name {
+            a["id"].as_u64()
+        } else {
+            None
+        }
+    }))
 }
 
 /// Downloads an artifact (expects a zip containing a single text file)

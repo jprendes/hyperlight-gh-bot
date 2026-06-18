@@ -8,6 +8,7 @@ use tracing_subscriber::EnvFilter;
 mod auth;
 mod config;
 mod handler;
+mod repo_config;
 mod webhook;
 
 use config::Config;
