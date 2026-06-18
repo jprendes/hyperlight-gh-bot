@@ -23,7 +23,7 @@ pub async fn try_post_benchmark_comment(
     .await?;
 
     // Load per-repo config (or defaults if file not found)
-    let repo_config = repo_config::load(&octocrab, owner, repo).await?;
+    let repo_config = repo_config::load(&octocrab, owner, repo, head_sha).await?;
 
     // Check if this job matches the configured filter
     let job_regex = repo_config.job_filter_regex()?;
@@ -126,14 +126,20 @@ async fn download_artifact_text(
     repo: &str,
     artifact_id: u64,
 ) -> Result<String> {
-    // Get the download URL (GitHub returns a 302 redirect)
-    let bytes: Vec<u8> = octocrab
-        .get(
-            format!("/repos/{owner}/{repo}/actions/artifacts/{artifact_id}/zip"),
-            None::<&()>,
-        )
+    let route = format!("/repos/{owner}/{repo}/actions/artifacts/{artifact_id}/zip");
+
+    let response = octocrab
+        ._get(route)
         .await
         .context("Failed to download artifact")?;
+
+    use http_body_util::BodyExt;
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .context("Failed to read artifact response body")?
+        .to_bytes();
 
     // The response is a zip file — extract the first file
     let cursor = std::io::Cursor::new(bytes);

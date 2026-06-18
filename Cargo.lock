@@ -675,6 +675,7 @@ dependencies = [
  "axum",
  "hex",
  "hmac",
+ "http-body-util",
  "jsonwebtoken",
  "octocrab",
  "regex",

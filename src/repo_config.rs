@@ -32,13 +32,14 @@ impl RepoConfig {
     }
 }
 
-/// Fetches the repo config from `.github/hyperlight-bot.yml` on the default branch.
+/// Fetches the repo config from `.github/hyperlight-bot.yml` at the given ref.
 /// Returns the default config if the file doesn't exist.
-pub async fn load(octocrab: &Octocrab, owner: &str, repo: &str) -> Result<RepoConfig> {
+pub async fn load(octocrab: &Octocrab, owner: &str, repo: &str, git_ref: &str) -> Result<RepoConfig> {
     let result = octocrab
         .repos(owner, repo)
         .get_content()
         .path(CONFIG_PATH)
+        .r#ref(git_ref)
         .send()
         .await;
 
