@@ -148,3 +148,13 @@ az containerapp update \
   --name $APP_NAME \
   --image "$GHCR_IMAGE"
 ```
+
+### View logs
+
+```bash
+az containerapp logs show \
+  --resource-group $RESOURCE_GROUP \
+  --name $APP_NAME \
+  --type console \
+  --follow
+```
