@@ -1,1 +1,6 @@
 /target
+# Local credentials — canonical copies live in Azure Key Vault
+# (hyperlight-gh-bot-kv: github-app-key, github-webhook-secret)
+*.pem
+webhook-token.txt
+data.txt
