@@ -38,12 +38,27 @@ The bot is configured via environment variables:
 | `GITHUB_APP_KEY` | The App's private key (PEM format, including `-----BEGIN...` markers) |
 | `GITHUB_WEBHOOK_SECRET` | The webhook secret configured in the App settings |
 
+The deployed values are stored in Azure and are the source of truth — the
+`github-app-key` and `github-webhook-secret` secrets in the
+`hyperlight-gh-bot-kv` Key Vault. Keeping local copies of the private key or
+webhook secret is unnecessary; fetch them on demand as shown below.
+
 ## Running locally
 
+Requires `az login` with access to the Key Vault:
+
 ```bash
-export GITHUB_APP_ID=123456
-export GITHUB_APP_KEY="$(cat private-key.pem)"
-export GITHUB_WEBHOOK_SECRET="your-secret"
+RESOURCE_GROUP="hyperlight-gh-bot-rg"
+APP_NAME="hyperlight-gh-bot"
+KEY_VAULT="hyperlight-gh-bot-kv"
+
+export GITHUB_APP_ID="$(az containerapp show \
+  --resource-group $RESOURCE_GROUP --name $APP_NAME \
+  --query "properties.template.containers[0].env[?name=='GITHUB_APP_ID'].value | [0]" -o tsv)"
+export GITHUB_APP_KEY="$(az keyvault secret show \
+  --vault-name $KEY_VAULT --name github-app-key --query value -o tsv)"
+export GITHUB_WEBHOOK_SECRET="$(az keyvault secret show \
+  --vault-name $KEY_VAULT --name github-webhook-secret --query value -o tsv)"
 
 cargo run
 ```
@@ -52,12 +67,14 @@ The server listens on port 8080. For local development, use a tunnel (e.g. `ngro
 
 ## Building the Docker image
 
+Reusing the environment variables exported above:
+
 ```bash
 docker build -t hyperlight-gh-bot .
 docker run -p 8080:8080 \
-  -e GITHUB_APP_ID=... \
-  -e GITHUB_APP_KEY="$(cat private-key.pem)" \
-  -e GITHUB_WEBHOOK_SECRET=... \
+  -e GITHUB_APP_ID="$GITHUB_APP_ID" \
+  -e GITHUB_APP_KEY="$GITHUB_APP_KEY" \
+  -e GITHUB_WEBHOOK_SECRET="$GITHUB_WEBHOOK_SECRET" \
   hyperlight-gh-bot
 ```
 

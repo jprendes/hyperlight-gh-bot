@@ -77,6 +77,10 @@ You can also trigger it manually from the Actions tab.
 
 ### Create Key Vault and store secrets
 
+This is the one-time bootstrap: it is the only step that needs the `.pem` file
+downloaded from GitHub. Once uploaded, the Key Vault is the source of truth and
+the local copies of the key and webhook secret can be deleted.
+
 ```bash
 az keyvault create \
   --resource-group $RESOURCE_GROUP \
@@ -91,6 +95,17 @@ az keyvault secret set --vault-name $KEY_VAULT \
 az keyvault secret set --vault-name $KEY_VAULT \
   --name github-webhook-secret \
   --value "your-webhook-secret"
+```
+
+> A GitHub App private key can never be re-downloaded from GitHub. After this
+> step the Key Vault holds the only copy — if it is lost, generate a new key in
+> the App settings and re-run the `secret set` command above.
+
+To read the secrets back later (instead of keeping local files):
+
+```bash
+az keyvault secret show --vault-name $KEY_VAULT --name github-app-key --query value -o tsv
+az keyvault secret show --vault-name $KEY_VAULT --name github-webhook-secret --query value -o tsv
 ```
 
 ### Create Container Apps environment
