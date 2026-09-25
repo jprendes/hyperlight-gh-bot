@@ -6,7 +6,8 @@ A GitHub App webhook server that posts workflow artifact content as PR comments.
 
 1. A CI workflow runs and uploads an artifact containing the comment body (default name: `pr-comment`).
 2. GitHub sends a `workflow_job` webhook event when the job completes.
-3. The bot downloads the artifact and posts (or updates) a comment on the associated PR.
+3. The bot downloads the artifact and posts a new comment on the associated PR.
+4. Comments the bot previously posted on that PR are hidden as `outdated`.
 
 Per-repository behavior is configured via `.github/hyperlight-bot.yml`:
 

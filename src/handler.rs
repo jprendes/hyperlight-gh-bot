@@ -4,6 +4,38 @@ use crate::auth;
 use crate::config::Config;
 use crate::repo_config;
 
+/// Lists the PR's issue comments, flagging the ones authored by the bot itself
+/// (`viewerDidAuthor`) and the ones already hidden (`isMinimized`).
+const LIST_COMMENTS_QUERY: &str = r#"
+query ListComments($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      comments(first: 100, after: $cursor) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          id
+          isMinimized
+          viewerDidAuthor
+        }
+      }
+    }
+  }
+}
+"#;
+
+const MINIMIZE_COMMENT_MUTATION: &str = r#"
+mutation MinimizeComment($subjectId: ID!) {
+  minimizeComment(input: { classifier: OUTDATED, subjectId: $subjectId }) {
+    minimizedComment {
+      isMinimized
+    }
+  }
+}
+"#;
+
 /// Downloads the comment artifact from a workflow run and posts it to the associated PR.
 /// The artifact is expected to be a zip containing a single text file with the comment body.
 pub async fn try_post_benchmark_comment(
@@ -57,8 +89,7 @@ pub async fn try_post_benchmark_comment(
     // Download the artifact content — this is the comment body
     let body = download_artifact_text(&octocrab, owner, repo, artifact_id).await?;
 
-    // Upsert the comment (update existing bot comment or create new one)
-    upsert_pr_comment(&octocrab, owner, repo, pr_number, &body).await?;
+    post_pr_comment(&octocrab, owner, repo, pr_number, &body).await?;
 
     tracing::info!("Posted comment on PR #{pr_number}");
     Ok(())
@@ -152,39 +183,159 @@ async fn download_artifact_text(
     Ok(content)
 }
 
-/// Updates an existing bot comment or creates a new one on the PR.
-async fn upsert_pr_comment(
+/// Creates a new comment on the PR, then hides the bot's previous comments as outdated.
+async fn post_pr_comment(
     octocrab: &octocrab::Octocrab,
     owner: &str,
     repo: &str,
     pr_number: u64,
     body: &str,
 ) -> Result<()> {
-    let issues = octocrab.issues(owner, repo);
-
-    // Look for an existing comment from our bot
-    let comments = issues
-        .list_comments(pr_number)
-        .send()
+    let new_comment = octocrab
+        .issues(owner, repo)
+        .create_comment(pr_number, body)
         .await
-        .context("Failed to list PR comments")?;
+        .context("Failed to create comment")?;
 
-    let marker = "Posted by hyperlight-gh-bot";
-    let existing = comments.items.iter().find(|c| {
-        c.body.as_deref().is_some_and(|b| b.contains(marker))
-    });
-
-    if let Some(comment) = existing {
-        issues
-            .update_comment(comment.id, body)
-            .await
-            .context("Failed to update comment")?;
-    } else {
-        issues
-            .create_comment(pr_number, body)
-            .await
-            .context("Failed to create comment")?;
+    // The comment is already published, so a cleanup failure must not fail the whole run.
+    if let Err(e) =
+        hide_previous_comments(octocrab, owner, repo, pr_number, &new_comment.node_id).await
+    {
+        tracing::warn!("Failed to hide previous bot comments on PR #{pr_number}: {e:#}");
     }
 
     Ok(())
+}
+
+/// Minimizes every not-yet-hidden comment the bot previously authored on the PR,
+/// skipping the comment that was just created.
+async fn hide_previous_comments(
+    octocrab: &octocrab::Octocrab,
+    owner: &str,
+    repo: &str,
+    pr_number: u64,
+    new_comment_node_id: &str,
+) -> Result<()> {
+    let mut cursor: Option<String> = None;
+    let mut stale_comment_ids = Vec::new();
+
+    loop {
+        let response: serde_json::Value = octocrab
+            .graphql(&serde_json::json!({
+                "query": LIST_COMMENTS_QUERY,
+                "variables": {
+                    "owner": owner,
+                    "repo": repo,
+                    "number": pr_number,
+                    "cursor": cursor,
+                },
+            }))
+            .await
+            .context("Failed to list PR comments")?;
+        check_graphql_errors(&response)?;
+
+        let comments = &response["data"]["repository"]["pullRequest"]["comments"];
+
+        for node in comments["nodes"].as_array().into_iter().flatten() {
+            let Some(id) = node["id"].as_str() else {
+                continue;
+            };
+            let authored_by_bot = node["viewerDidAuthor"] == true;
+            let already_hidden = node["isMinimized"] == true;
+            if authored_by_bot && !already_hidden && id != new_comment_node_id {
+                stale_comment_ids.push(id.to_owned());
+            }
+        }
+
+        if comments["pageInfo"]["hasNextPage"] != true {
+            break;
+        }
+        cursor = comments["pageInfo"]["endCursor"]
+            .as_str()
+            .map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+
+    let mut hidden = 0;
+    for id in &stale_comment_ids {
+        match minimize_comment_as_outdated(octocrab, id).await {
+            Ok(()) => hidden += 1,
+            Err(e) => tracing::warn!("Failed to hide previous bot comment {id}: {e:#}"),
+        }
+    }
+
+    tracing::info!(
+        "Hid {hidden} of {} previous bot comment(s) on PR #{pr_number}",
+        stale_comment_ids.len()
+    );
+
+    Ok(())
+}
+
+async fn minimize_comment_as_outdated(
+    octocrab: &octocrab::Octocrab,
+    subject_id: &str,
+) -> Result<()> {
+    let response: serde_json::Value = octocrab
+        .graphql(&serde_json::json!({
+            "query": MINIMIZE_COMMENT_MUTATION,
+            "variables": {
+                "subjectId": subject_id,
+            },
+        }))
+        .await
+        .context("Failed to minimize comment")?;
+    check_graphql_errors(&response)?;
+
+    if response["data"]["minimizeComment"]["minimizedComment"]["isMinimized"] != true {
+        anyhow::bail!("GitHub reported the comment as not minimized");
+    }
+
+    Ok(())
+}
+
+/// GraphQL reports failures in the `errors` field of an otherwise successful response.
+fn check_graphql_errors(response: &serde_json::Value) -> Result<()> {
+    match response["errors"].as_array() {
+        Some(errors) if !errors.is_empty() => {
+            anyhow::bail!("GitHub GraphQL API returned errors: {}", response["errors"])
+        }
+        _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{check_graphql_errors, LIST_COMMENTS_QUERY, MINIMIZE_COMMENT_MUTATION};
+
+    #[test]
+    fn minimize_mutation_uses_outdated_classifier() {
+        assert!(MINIMIZE_COMMENT_MUTATION.contains("classifier: OUTDATED"));
+        assert!(MINIMIZE_COMMENT_MUTATION.contains("subjectId: $subjectId"));
+    }
+
+    #[test]
+    fn list_query_requests_authorship_and_minimized_state() {
+        assert!(LIST_COMMENTS_QUERY.contains("viewerDidAuthor"));
+        assert!(LIST_COMMENTS_QUERY.contains("isMinimized"));
+        assert!(LIST_COMMENTS_QUERY.contains("hasNextPage"));
+    }
+
+    #[test]
+    fn graphql_errors_are_detected() {
+        let ok = serde_json::json!({ "data": { "minimizeComment": {} } });
+        assert!(check_graphql_errors(&ok).is_ok());
+
+        let empty_errors = serde_json::json!({ "data": {}, "errors": [] });
+        assert!(check_graphql_errors(&empty_errors).is_ok());
+
+        let failed = serde_json::json!({
+            "data": null,
+            "errors": [{ "message": "Resource not accessible by integration" }],
+        });
+        let err = check_graphql_errors(&failed).unwrap_err().to_string();
+        assert!(err.contains("Resource not accessible by integration"));
+    }
 }

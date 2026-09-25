@@ -143,10 +143,11 @@ Go back to your GitHub App settings and update the **Webhook URL** to `https://<
 After the GitHub Actions workflow pushes a new image:
 
 ```bash
+SHA=$(gh run list --repo <owner>/hyperlight-gh-bot --workflow=publish.yml --limit=1 --json headSha --jq '.[0].headSha[:7]')
 az containerapp update \
   --resource-group $RESOURCE_GROUP \
   --name $APP_NAME \
-  --image "$GHCR_IMAGE"
+  --image "ghcr.io/<owner>/hyperlight-gh-bot:sha-$SHA"
 ```
 
 ### View logs
